@@ -1,0 +1,76 @@
+---
+- hosts: zookeepers
+  remote_user: "{{ user }}"
+  tasks:
+  - command: apt-get -y update
+  - apt: pkg=zookeeperd state=present
+
+  - name: create zookeeper data directory
+    file: path=/var/zookeeper state=directory
+  - name: generate zookeeper configuration
+    template: src=zoo.cfg dest="/etc/zookeeper/conf/zoo.cfg"
+  - name: create zookeeper id
+    command: cp id /var/lib/zookeeper/myid
+  - service: name=zookeeper state=restarted
+
+- hosts: masters
+  remote_user: "{{ user }}"
+  vars:
+    zookeepers: "zk://{% for host in groups['zookeepers'] %}{{ hostvars[host]['ansible_eth1']['ipv4']['address'] + ':2181' }}{% if not loop.last %},{% endif %}{% endfor %}/mesos"
+    quorum: "{{ 1 + (((groups['zookeepers'] | length) / 2) | int) }}"
+  tasks:
+  - name: add backports repo
+    lineinfile: line="deb http://httpredir.debian.org/debian jessie-backports main"
+                dest="/etc/apt/sources.list.d/jessie-backports.list"
+                create=yes
+  - name: add mesosphere repo key
+    command: apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF
+  - name: add mesosphere repo
+    lineinfile: line="deb http://repos.mesosphere.io/debian jessie main"
+                dest="/etc/apt/sources.list.d/mesosphere.list"
+                create=yes
+  - command: apt-get -y update
+
+  - apt: pkg=mesos state=present
+  - name: generate zk
+    shell: "echo {{ zookeepers }} > /etc/mesos/zk"
+  - name: generate advertise_ip
+    shell: "echo {{ ansible_eth1['ipv4']['address'] }} > /etc/mesos-master/advertise_ip"
+  - name: generate advertise_port
+    shell: "echo 5050 > /etc/mesos-master/advertise_port"
+  - name: generate quorum
+    shell: "echo {{ quorum }} > /etc/mesos-master/quorum"
+  - name: generate work_dir
+    shell: "echo /var/lib/mesos > /etc/mesos-master/work_dir"
+  - service: name=mesos-master state=restarted
+
+  - apt: pkg=marathon state=present
+  - file: path=/etc/sysconfig state=directory
+  - name: generate marathon config
+    shell: "echo 'MARATHON_MASTER={{ zookeepers }}' > /etc/sysconfig/marathon"
+  - service: name=marathon state=restarted
+
+- hosts: slaves
+  remote_user: "{{ user }}"
+  vars:
+    zookeepers: "zk://{% for host in groups['zookeepers'] %}{{ hostvars[host]['ansible_eth1']['ipv4']['address'] + ':2181' }}{% if not loop.last %},{% endif %}{% endfor %}/mesos"
+  tasks:
+  - name: add backports repo
+    lineinfile: line="deb http://httpredir.debian.org/debian jessie-backports main"
+                dest="/etc/apt/sources.list.d/jessie-backports.list"
+                create=yes
+  - name: add mesosphere repo key
+    command: apt-key adv --keyserver keyserver.ubuntu.com --recv E56151BF
+  - name: add mesosphere repo
+    lineinfile: line="deb http://repos.mesosphere.io/debian jessie main"
+                dest=/etc/apt/sources.list.d/mesosphere.list
+                create=yes
+  - command: apt-get -y update
+
+  - apt: pkg=mesos state=present
+  - name: generate zk
+    shell: "echo {{ zookeepers }} > /etc/mesos/zk"
+  - name: generate ip
+    shell: "echo {{ ansible_eth1['ipv4']['address'] }} > /etc/mesos-slave/ip"
+  - service: name=mesos-slave state=restarted
+
